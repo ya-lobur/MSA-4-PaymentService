@@ -1,0 +1,195 @@
+@startuml payment-saga-bpmn
+!theme plain
+skinparam ActivityFontSize 11
+skinparam ActivityFontName Arial
+
+title Payment Processing Saga - BPMN Orchestration Flow
+
+start
+
+:Receive Payment Request;
+note right
+  Client initiates payment
+  via HTTP POST /payments
+end note
+
+:Create Payment Record;
+note right
+  **CREATE_PAYMENT**
+  State: CREATED
+  Compensatable
+end note
+
+:Debit Customer Account;
+note right
+  **DEBIT_CUSTOMER_ACCOUNT**
+  State: DEBITED
+  Compensatable
+  Publish: DebitAccountCommand
+end note
+
+:Submit Fraud Check;
+note right
+  **FRAUD_CHECK_REQUEST**
+  State: FRAUD_CHECKING
+  Retriable
+  Publish: CheckFraudCommand
+end note
+
+if (Fraud Check Response?) then (APPROVED)
+  :Fraud Check Passed;
+  note right
+    State: FRAUD_APPROVED
+  end note
+elseif (MANUAL_REVIEW) then
+  :Wait for Manual Review;
+  note right
+    State: MANUAL_REVIEW_PENDING
+    Timer: 20 minutes
+  end note
+
+  if (Manual Review Result?) then (APPROVED within 20 min)
+    :Manual Review Approved;
+    note right
+      State: FRAUD_APPROVED
+    end note
+
+  elseif (REJECTED within 20 min) then
+    :Manual Review Rejected;
+    note right
+      State: FRAUD_REJECTED
+    end note
+    #LightCoral:compensation_flow;
+    stop
+
+  else (TIMEOUT after 20 min)
+    :Default to Approved (Cut-off);
+    note right
+      State: FRAUD_APPROVED
+      Default approval per business rule
+    end note
+  endif
+
+elseif (REJECTED) then
+  :Fraud Check Failed;
+  note right
+    State: FRAUD_REJECTED
+  end note
+  #LightCoral:compensation_flow;
+  stop
+
+else (TIMEOUT/ERROR)
+  :Fraud Check Timeout;
+  note right
+    Cut-off time reached
+    Default to FRAUD_APPROVED
+  end note
+endif
+
+' ===== PIVOT POINT =====
+partition "**PIVOT POINT - Point of No Return**" #LightYellow {
+  :Credit Merchant Account;
+  note right
+    **CREDIT_MERCHANT_ACCOUNT**
+    State: CREDITED
+    **PIVOT TRANSACTION**
+    Irreversible via saga
+    Publish: CreditAccountCommand
+  end note
+}
+
+if (Credit Successful?) then (yes)
+  fork
+    :Send Success Notification;
+    note right
+      **SEND_SUCCESS_NOTIFICATION**
+      Retriable
+      Publish: SendNotificationCommand
+    end note
+  fork again
+    :Update Payment Status;
+    note right
+      State: COMPLETED
+    end note
+  end fork
+
+  :Payment Completed Successfully;
+  stop
+
+else (no)
+  :Credit Failed;
+  note right
+    Merchant account error
+    Must compensate
+  end note
+  #LightCoral:compensation_flow;
+  stop
+endif
+
+' ===== COMPENSATION FLOW =====
+partition "**Compensation Flow**" #LightCoral {
+  :Initiate Refund;
+  note right
+    State: REFUNDING
+  end note
+
+  :Refund Customer Account;
+  note right
+    **REFUND_CUSTOMER_ACCOUNT**
+    Compensates DEBIT
+    Publish: RefundAccountCommand
+  end note
+
+  if (Refund Successful?) then (yes)
+    :Refund Completed;
+    note right
+      State: REFUNDED
+    end note
+
+    fork
+      :Send Failure Notification;
+      note right
+        **SEND_FAILURE_NOTIFICATION**
+        Retriable
+        Publish: SendNotificationCommand
+      end note
+    fork again
+      if (Fraud Rejected?) then (yes)
+        :Send Fraud Alert;
+        note right
+          **SEND_FRAUD_ALERT**
+          Retriable
+          Notify security system
+        end note
+      endif
+    end fork
+
+    :Cancel Payment Record;
+    note right
+      **CANCEL_PAYMENT**
+      Compensates CREATE_PAYMENT
+      State: CANCELLED
+    end note
+
+    :Payment Cancelled;
+    stop
+
+  else (no)
+    :Refund Failed;
+    note right
+      State: REFUND_FAILED
+      **CRITICAL ERROR**
+    end note
+
+    :Trigger Manual Intervention;
+    note right
+      State: MANUAL_INTERVENTION_REQUIRED
+      Alert operations team
+      Money stuck in limbo
+    end note
+
+    stop
+  endif
+}
+
+@enduml
