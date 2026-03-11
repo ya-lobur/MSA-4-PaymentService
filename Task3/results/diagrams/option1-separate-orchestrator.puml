@@ -1,0 +1,46 @@
+@startuml option1-separate-orchestrator
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Container Diagram - Option 1: Separate Orchestrator Service
+
+Person(customer, "Customer", "User making payment")
+
+System_Boundary(orchestrpay, "OrchestrPay Platform") {
+    Container(orchestrator, "Orchestrator Service", "Temporal/Camunda", "Manages saga workflows, coordinates payment process, handles compensations")
+    Container(payment, "Payment Service", "Java/Spring", "Handles account debits, credits, refunds")
+    Container(fraud, "FraudCheck Service", "Java/Spring", "Analyzes transactions for fraud, supports manual review")
+    Container(notification, "Notification Service", "Java/Spring", "Sends notifications to customers")
+
+    ContainerDb(orchestrator_db, "Orchestrator DB", "PostgreSQL", "Stores saga state, workflow history")
+    ContainerDb(payment_db, "Payment DB", "PostgreSQL", "Stores accounts, transactions, payment data")
+    ContainerDb(fraud_db, "FraudCheck DB", "PostgreSQL", "Stores fraud rules, check results")
+
+    ContainerQueue(kafka, "Message Broker", "Apache Kafka", "Event streaming platform")
+    ContainerDb(redis, "Cache", "Redis", "Caches fraud results, limits, transaction status")
+}
+
+System_Ext(fraud_providers, "External Fraud Providers", "AML, GeoRisk, etc.")
+
+Rel(customer, orchestrator, "Initiates payment", "HTTPS/JSON")
+
+Rel(orchestrator, kafka, "Publishes commands", "DebitAccountCommand, CreditAccountCommand, CheckFraudCommand, SendNotificationCommand")
+Rel(orchestrator, kafka, "Consumes events", "AccountDebitedEvent, FraudCheckResultEvent, NotificationSentEvent")
+Rel(orchestrator, orchestrator_db, "Reads/Writes", "Saga state, workflow data")
+
+Rel(payment, kafka, "Consumes commands", "payment.commands topic")
+Rel(payment, kafka, "Publishes events", "payment.events topic")
+Rel(payment, payment_db, "Reads/Writes", "Account balances, transactions")
+
+Rel(fraud, kafka, "Consumes commands", "fraud.commands topic")
+Rel(fraud, kafka, "Publishes events", "fraud.events topic")
+Rel(fraud, fraud_db, "Reads/Writes", "Fraud check results")
+Rel(fraud, redis, "Reads/Writes", "Cached fraud results")
+Rel(fraud, fraud_providers, "Checks fraud", "HTTPS/API")
+
+Rel(notification, kafka, "Consumes commands", "notification.commands topic")
+Rel(notification, kafka, "Publishes events", "notification.events topic")
+
+SHOW_LEGEND()
+@enduml
